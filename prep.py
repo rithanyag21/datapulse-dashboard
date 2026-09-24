@@ -1,0 +1,30 @@
+"""Build derived data. Run once: python prep.py (needs the original uploads in ./raw/)."""
+import pandas as pd, joblib, re, html, shutil, sys
+S = sys.argv[1] if len(sys.argv) > 1 else 'raw/'
+p = pd.read_csv(S+'Social_Engine_Posts_Corrupted.csv'); k = pd.read_csv(S+'Social_Engine_Posts_Cleaned_csv_.csv')
+p = p.drop_duplicates()
+def ts(s):
+    s = str(s)
+    if re.fullmatch(r'\d{9,11}', s): return pd.to_datetime(int(s), unit='s').floor('min')
+    if 'T' in s: return pd.to_datetime(s).floor('min')
+    return pd.to_datetime(s, format='%d-%m-%Y')
+p['timestamp'] = p.timestamp.map(ts)
+p['likes_imputed'] = p.likes.isna() | (p.likes < 0)
+p['likes'] = p.likes.where(~p.likes_imputed, k.set_index('post_id').likes.reindex(p.post_id).values).astype(int)
+p['platform'] = p.platform.fillna('Unknown')
+p['text_content'] = p.text_content.fillna('[Missing text]').map(lambda t: html.unescape(t).strip())
+p.to_csv('data/posts_v2.csv', index=False)
+shutil.copy(S+'Social_Engine_Posts_Corrupted.csv', 'data/posts_corrupted.csv')
+shutil.copy(S+'Social_Engine_Users_Cleaned.csv', 'data/users.csv')
+shutil.copy(S+'final_error_analysis.csv', 'data/error_analysis.csv')
+for f in ['tfidf_vectorizer.pkl', 'final_nlp_model.pkl']: shutil.copy(S+f, 'models/'+f)
+d = pd.read_csv(S+'DATA_PULSE_Round3_Final_Dataset.csv')
+v, m = joblib.load('models/tfidf_vectorizer.pkl'), joblib.load('models/final_nlp_model.pkl')
+pr = m.predict_proba(v.transform(d.clean_text.fillna('')))
+d['r2_pred'] = m.classes_[pr.argmax(1)]; d['r2_conf'] = pr.max(1)
+for i, c in enumerate(m.classes_): d['r2_p_' + c.lower()] = pr[:, i]
+d.to_csv('data/r3_scored.csv', index=False)
+print(d.r2_pred.value_counts().to_dict(), '| agree w/ lexicon:', round((d.r2_pred == d.sentiment).mean(), 3))
+print(d.groupby('thread_date').agg(n=('post_id','count'), comp=('compound_score','mean')).round(2).to_dict('index'))
+print(d.themes.head(4).tolist()); print(pd.crosstab(d.sentiment, d.r2_pred).to_dict())
+print(p.timestamp.min(), p.timestamp.max(), len(p), p.likes_imputed.sum())
